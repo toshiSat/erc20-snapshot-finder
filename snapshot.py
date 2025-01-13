@@ -1,23 +1,23 @@
 from db_operations import DatabaseOperations
 from web3_operations import Web3Operations
-from config import TOKEN_CONFIG
+from config import TOKEN_CONFIG, BATCH_SIZE
 import argparse
 
-def fetch_and_store_transfer_events(db_ops, web3_ops, start_block, end_block, batch_size=100):
+def fetch_and_store_transfer_events(db_ops, web3_ops, start_block, end_block, batch_size=BATCH_SIZE):
     current_block = start_block
     
     while current_block <= end_block:
         batch_end = min(current_block + batch_size - 1, end_block)
-        print(f"Fetching blocks {current_block} to {batch_end}")
+        print(f"Fetching blocks {current_block:,} to {batch_end:,}")
         
         try:
             batch_values = web3_ops.get_transfer_events(current_block, batch_end)
             if batch_values:
                 inserted = db_ops.store_transfers(batch_values)
-                print(f"Inserted {inserted} transfers")
+                print(f"Inserted {inserted:,} transfers")
 
         except Exception as e:
-            print(f"Error processing blocks {current_block}-{batch_end}: {e}")
+            print(f"Error processing blocks {current_block:,}-{batch_end:,}: {e}")
             batch_size = max(1, batch_size // 2)
             continue
             
@@ -39,11 +39,11 @@ def main():
 
     try:
         start_block = db_ops.get_last_processed_block(token_data['start_block'], args.reset)
-        print(f"Last processed block: {start_block}")
+        print(f"Last processed block: {start_block:,}")
         end_block = token_data['end_block']
-        print(f"Processing {args.token} from block {start_block} to {end_block}")
+        print(f"Processing {args.token} from block {start_block:,} to {end_block:,}")
         
-        fetch_and_store_transfer_events(db_ops, web3_ops, start_block, end_block, batch_size=1000)
+        fetch_and_store_transfer_events(db_ops, web3_ops, start_block, end_block)
         db_ops.generate_snapshot(args.token)
     
     finally:
