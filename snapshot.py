@@ -44,7 +44,7 @@ def main():
         print(f"Processing {args.token} from block {start_block:,} to {end_block:,}")
         
         fetch_and_store_transfer_events(db_ops, web3_ops, start_block, end_block)
-        db_ops.generate_snapshot(args.token)
+        db_ops.generate_snapshot(args.token, token_data['address'])
     
     finally:
         db_ops.close()
