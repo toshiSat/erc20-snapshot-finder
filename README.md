@@ -142,6 +142,3 @@ The tool generates CSV files in the following format:
 - Database operations are wrapped in transactions
 - Duplicate transfers are automatically skipped
 
-```
-
-```
