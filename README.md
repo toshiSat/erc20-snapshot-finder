@@ -1,6 +1,6 @@
 # ERC20 Token Snapshot Tool
 
-A tool to create token holder snapshots for ERC20 tokens on any EVM network.  A lot of the tools I found stored transfer data in json files then read each one to generate a CSV.  This was not useful when dealing with blockchains and tokens that had a lot of Transfer events.  This Project stores all the data in a Postgres DB and then uses that to generate the CSV's.
+A tool to create token holder snapshots for ERC20 tokens on any EVM network.  A lot of the tools I found stored transfer data in json files then read each one to generate a CSV.  This was not useful when dealing with blockchains and tokens that had a lot of Transfer events as it would take a long time, with a lot of resources, and usually OOM.  This Project stores all the data in a Postgres DB and then uses that to generate the CSV's.
 
 ## Project Structure
 
