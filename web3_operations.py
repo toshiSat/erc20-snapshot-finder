@@ -27,7 +27,6 @@ class Web3Operations:
             to_address = Web3.to_checksum_address(to_address)
             
             batch_values.append((
-                self.contract_address,
                 log['blockNumber'],
                 log['transactionHash'].hex(),
                 log['logIndex'],
