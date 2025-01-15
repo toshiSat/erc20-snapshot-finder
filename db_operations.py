@@ -1,5 +1,6 @@
 import psycopg2
 from config import DB_CONFIG
+from web3 import Web3
 
 class DatabaseOperations:
     def __init__(self, reset=False):
@@ -10,9 +11,7 @@ class DatabaseOperations:
         if reset:
             print("Resetting database...")
             self.cursor.execute('''
-                DROP INDEX IF EXISTS idx_to_address;
-                DROP INDEX IF EXISTS idx_from_address;
-                TRUNCATE TABLE erc20_transfers;
+                DROP TABLE IF EXISTS erc20_transfers CASCADE;
             ''')
             self.db_conn.commit()
             print("Database reset complete")
@@ -20,19 +19,22 @@ class DatabaseOperations:
         self.setup_database()
 
     def setup_database(self):
-        # Create table for transfer events
-        self.cursor.execute('''CREATE TABLE IF NOT EXISTS erc20_transfers (
-                            token_address TEXT,
-                            block_number BIGINT,
-                            transaction_hash TEXT,
-                            log_index BIGINT,
-                            from_address TEXT,
-                            to_address TEXT,
-                            value NUMERIC,
-                            UNIQUE(token_address, block_number, log_index)
-                          );''')
+        # First create the table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS erc20_transfers (
+                token_address TEXT,
+                block_number BIGINT,
+                transaction_hash TEXT,
+                log_index BIGINT,
+                from_address TEXT,
+                to_address TEXT,
+                value NUMERIC,
+                UNIQUE(token_address, block_number, log_index)
+            );
+        ''')
+        self.db_conn.commit()
         
-        # Create indexes
+        # Then create indexes
         self.cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_token_address ON erc20_transfers(token_address);
             CREATE INDEX IF NOT EXISTS idx_to_address ON erc20_transfers(to_address);
@@ -60,7 +62,15 @@ class DatabaseOperations:
         return last_block if last_block is not None else start_block
 
     def generate_snapshot(self, token_name, token_address):
+        # Ensure token_address is checksummed
+        token_address = Web3.to_checksum_address(token_address)
         print(f"Calculating balances for {token_name} ({token_address}) and generating CSV...")
+        
+        # First, let's check if we have any transfers
+        self.cursor.execute('SELECT COUNT(*) FROM erc20_transfers WHERE token_address = %s', (token_address,))
+        count = self.cursor.fetchone()[0]
+        print(f"Found {count:,} transfers for token {token_name}")
+        
         self.cursor.execute('''
             -- Create temporary table with balances
             CREATE TEMP TABLE address_balances AS
@@ -85,23 +95,17 @@ class DatabaseOperations:
             ORDER BY balance DESC;
         ''', (token_address, token_address))
 
+        records = self.cursor.fetchall()
+        print(f"Found {len(records):,} addresses with positive balances")
+
         filename = f'snapshot_{token_name}.csv'
         print(f"Writing to {filename}...")
         with open(filename, 'w') as f:
             f.write('address,balance\n')
-            batch_size = 1000
-            records_written = 0
+            for record in records:
+                f.write(f'{record[0]},{record[1]}\n')
             
-            while True:
-                records = self.cursor.fetchmany(batch_size)
-                if not records:
-                    break
-                    
-                for record in records:
-                    f.write(f'{record[0]},{record[1]}\n')
-                
-                records_written += len(records)
-                print(f"Wrote {records_written:,} records to CSV")
+        print(f"Finished writing {len(records):,} records to {filename}")
 
     def close(self):
         self.cursor.close()
