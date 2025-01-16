@@ -126,6 +126,10 @@ class NFTLockScanner:
             self.cursor.execute('SELECT amount FROM nft_tokens WHERE token_id = %s', (token_id,))
             result = self.cursor.fetchone()
             if not result:
+                print(f"  SKIPPED: Token ID {token_id} not found in nft_tokens table")
+                # Debug: show all tokens in database
+                self.cursor.execute('SELECT token_id, amount FROM nft_tokens')
+                tokens = self.cursor.fetchall()
                 return None
                 
             amount = result[0]
@@ -151,8 +155,8 @@ class NFTLockScanner:
             )
             
         except Exception as e:
-            print(f"Error parsing transfer event: {e}")
-            print(f"Full log data: {log}")
+            print(f"  SKIPPED: Error parsing transfer event: {e}")
+            print(f"  Full log data: {log}")
             return None
 
     def parse_redeem_event(self, log):
@@ -172,9 +176,6 @@ class NFTLockScanner:
             
             if token != self.token_address:
                 return None
-
-            # Remove token from tracking since it's been redeemed
-            self.cursor.execute('DELETE FROM nft_tokens WHERE token_id = %s', (token_id,))
             
             return (
                 log['blockNumber'],
@@ -207,7 +208,7 @@ class NFTLockScanner:
             retries = 0
             while retries < max_retries:
                 try:
-                    # Get create/redeem events
+                    # Get all events
                     create_logs = self.w3.eth.get_logs({
                         'fromBlock': current_block,
                         'toBlock': batch_end,
@@ -217,65 +218,58 @@ class NFTLockScanner:
                             "0x" + self.redeemed_topic
                         ]]
                     })
-                    print(f"Found {len(create_logs)} create/redeem events")
                     
-                    # Get transfer events
                     transfer_logs = self.w3.eth.get_logs({
                         'fromBlock': current_block,
                         'toBlock': batch_end,
                         'address': self.contract_address,
                         'topics': ["0x" + self.transfer_topic]
                     })
+                    
+                    print(f"Found {len(create_logs)} create/redeem events")
                     print(f"Found {len(transfer_logs)} transfer events")
                     
-                    # Debug log each transfer
+                    # Combine all events and sort chronologically
+                    all_events = []
+                    
+                    for log in create_logs:
+                        event_type = "create" if log['topics'][0].hex() == self.created_topic else "redeem"
+                        all_events.append((log['blockNumber'], log['logIndex'], event_type, log))
+                    
                     for log in transfer_logs:
-                        block_num = log['blockNumber']
-                        tx_hash = log['transactionHash'].hex()
-                        token_id = int(log['topics'][3].hex(), 16)
-                        from_addr = '0x' + log['topics'][1].hex()[-40:]
-                        to_addr = '0x' + log['topics'][2].hex()[-40:]
-                        print(f"\nTransfer at block {block_num}")
-                        print(f"  TX Hash: {tx_hash}")
-                        print(f"  Token ID: {token_id}")
-                        print(f"  From: {from_addr}")
-                        print(f"  To: {to_addr}")
-                        
-                        # Check if token exists in our DB
-                        self.cursor.execute('SELECT amount FROM nft_tokens WHERE token_id = %s', (token_id,))
-                        result = self.cursor.fetchone()
-                        if not result:
-                            print(f"  WARNING: Token ID {token_id} not found in database")
-                        else:
-                            print(f"  Amount: {result[0]}")
+                        all_events.append((log['blockNumber'], log['logIndex'], "transfer", log))
+                    
+                    # Sort by block number and log index only
+                    all_events.sort(key=lambda x: (x[0], x[1]))
                     
                     batch_values = []
                     
-                    # Process create/redeem events
-                    for log in create_logs:
-                        event_topic = log['topics'][0].hex()
-                        is_create = event_topic == self.created_topic
-                        if is_create:
+                    # Process events in strict chronological order
+                    for block_num, log_index, event_type, log in all_events:
+                        if event_type == "create":
                             parsed = self.parse_create_event(log)
                             if parsed:
                                 print(f"\nCreated token {parsed[4]} with amount {parsed[8]}")
-                        else:
+                                batch_values.append(parsed)
+                                self.db_conn.commit()
+                                
+                        elif event_type == "transfer":
+                            parsed = self.parse_transfer_event(log)
+                            if parsed:
+                                print(f"\nProcessed transfer of token {parsed[4]}")
+                                print(f"  From: {parsed[6]}")
+                                print(f"  To: {parsed[7]}")
+                                print(f"  Amount: {parsed[8]}")
+                                batch_values.append(parsed)
+                            else:
+                                print(f"\nSkipped transfer at block {block_num}")
+                                
+                        else:  # redeem
                             parsed = self.parse_redeem_event(log)
                             if parsed:
                                 print(f"\nRedeemed token {parsed[4]} with amount {parsed[8]}")
-                        if parsed:
-                            batch_values.append(parsed)
-                    
-                    # Process transfer events
-                    for log in transfer_logs:
-                        parsed = self.parse_transfer_event(log)
-                        if parsed:
-                            print(f"\nProcessed transfer of token {parsed[4]} with amount {parsed[8]}")
-                            print(f"  From: {parsed[6]}")
-                            print(f"  To: {parsed[7]}")
-                            batch_values.append(parsed)
-                        else:
-                            print(f"\nSkipped transfer at block {log['blockNumber']}")
+                                batch_values.append(parsed)
+                                self.db_conn.commit()
                     
                     if batch_values:
                         self.cursor.executemany('''
@@ -368,94 +362,4 @@ class NFTLockScanner:
         self.cursor.close()
         self.db_conn.close() 
 
-    def debug_blocks(self, problem_block, range=1):
-        """Debug a specific block range around the problem block"""
-        start_block = problem_block - range
-        end_block = problem_block + range
-        
-        print(f"\n=== DEBUG MODE: Scanning blocks {start_block} to {end_block} ===\n")
-        
-        try:
-            # Get create/redeem events
-            create_logs = self.w3.eth.get_logs({
-                'fromBlock': start_block,
-                'toBlock': end_block,
-                'address': self.contract_address,
-                'topics': [[
-                    "0x" + self.created_topic,
-                    "0x" + self.redeemed_topic
-                ]]
-            })
-            print(f"Found {len(create_logs)} create/redeem events")
-            
-            # Get transfer events
-            transfer_logs = self.w3.eth.get_logs({
-                'fromBlock': start_block,
-                'toBlock': end_block,
-                'address': self.contract_address,
-                'topics': ["0x" + self.transfer_topic]
-            })
-            print(f"Found {len(transfer_logs)} transfer events")
-            
-            # Show all events chronologically
-            all_events = []
-            
-            for log in create_logs:
-                event_type = "CREATE" if log['topics'][0].hex() == self.created_topic else "REDEEM"
-                all_events.append((log['blockNumber'], log['logIndex'], event_type, log))
-                
-            for log in transfer_logs:
-                all_events.append((log['blockNumber'], log['logIndex'], "TRANSFER", log))
-            
-            # Sort by block number and log index
-            all_events.sort(key=lambda x: (x[0], x[1]))
-            
-            # Print all events in order
-            for block_num, log_index, event_type, log in all_events:
-                print(f"\nBlock {block_num}, LogIndex {log_index}: {event_type}")
-                print(f"  TX Hash: {log['transactionHash'].hex()}")
-                
-                if event_type == "TRANSFER":
-                    token_id = int(log['topics'][3].hex(), 16)
-                    from_addr = '0x' + log['topics'][1].hex()[-40:]
-                    to_addr = '0x' + log['topics'][2].hex()[-40:]
-                    print(f"  Token ID: {token_id}")
-                    print(f"  From: {from_addr}")
-                    print(f"  To: {to_addr}")
-                    
-                    # Check if token exists in DB
-                    self.cursor.execute('SELECT amount FROM nft_tokens WHERE token_id = %s', (token_id,))
-                    result = self.cursor.fetchone()
-                    if not result:
-                        print(f"  WARNING: Token ID {token_id} not found in database")
-                    else:
-                        print(f"  Amount: {result[0]}")
-                else:
-                    # Parse create/redeem event data
-                    data = log['data'].hex()
-                    if not data.startswith('0x'):
-                        data = '0x' + data
-                    data = data[2:]
-                    token_id = int(data[:64], 16)
-                    holder = '0x' + data[64:128][-40:]
-                    amount = int(data[128:192], 16)
-                    token = '0x' + data[192:256][-40:]
-                    print(f"  Token ID: {token_id}")
-                    print(f"  Holder: {holder}")
-                    print(f"  Amount: {amount}")
-                    print(f"  Token: {token}")
-                
-                # Check if this event is in our database
-                self.cursor.execute('''
-                    SELECT event_type, transaction_hash 
-                    FROM nft_locks 
-                    WHERE block_number = %s AND log_index = %s
-                ''', (block_num, log_index))
-                db_record = self.cursor.fetchone()
-                if db_record:
-                    print(f"  IN DATABASE: {db_record[0]} (TX: {db_record[1]})")
-                else:
-                    print("  NOT IN DATABASE")
-            
-        except Exception as e:
-            print(f"Error during debug: {e}") 
+   

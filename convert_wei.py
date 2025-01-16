@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 # Load the CSV file
-df = pd.read_csv("snapshot_VIRTUAL.csv")
+df = pd.read_csv("nft_locks.csv")
 
 # Convert the second column to numeric, handling non-numeric values safely
 df.iloc[:, 1] = pd.to_numeric(df.iloc[:, 1], errors='coerce')
